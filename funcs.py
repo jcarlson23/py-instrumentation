@@ -2,7 +2,7 @@
 
 import re
 import sys
-import pdb
+import getopt
 
 #
 # find C-style functions
@@ -64,9 +64,18 @@ def print_usage():
 #
 def write_macro(macro_name):
    macro_top = "#define %s(fmt, ...) \\\n" % (macro_name)
-   macro_bot = "\tdo { fprintf(stdout,\"%s:%d:%s(): \" fmt,__FILE__,__LINE__,__func__,__VA_ARGS__); } while(0)\n"
+   macro_bot = "\tdo { fprintf(stdout,\"%s:%d:%s(): \" fmt \"\\n\",__FILE__,__LINE__,__func__,__VA_ARGS__); } while(0)\n"
    macro = macro_top + macro_bot
    return macro
+
+#
+# insert macro call
+#
+def write_macro_call(macro_name):
+    if type(macro_name) != type(''):
+        print "ERROR macro name is not a string: ",macro_name
+    macrostr = macro_name + '("","");\n'
+    return macrostr
 
 #
 # find_macro_candidate
@@ -85,6 +94,22 @@ def find_macro_candidate(fhandle):
            return candidate
    return None
 
+#
+# Is using an existing macro
+#
+def is_using_macro(fhandle):
+    # macro definition candidates...
+   candidates = ['DPRINTF','DTELL']
+   fhandle.seek(0)
+   fstring = fhandle.read()
+   fhandle.seek(0)
+   for candidate in candidates:
+       needle = re.compile(candidate)
+       if needle.search(fstring):
+           return candidate
+       else:
+           continue
+   return None
 
 #
 # Find the end of the header
@@ -112,10 +137,57 @@ def find_header(fhandle):
    return last_line
 
 #
+# remove lines with the expression
+#
+def remove_lines_with_expression(infhandle,exp):
+    rexp = re.compile(exp)
+    infhandle.seek(0)
+    lines = []
+    for line in infhandle.readlines():
+        if rexp.search(line):
+            continue
+        else:
+            lines.append(line)
+
+    fname = infhandle.name
+    infhandle.close()
+    fhandle = open(fname,'w')
+    fhandle.write( ''.join(lines) )
+    fhandle.close()
+    infhandle = open(fname,'r')
+    return infhandle
+
+#
+# find line # with expression
+#
+def find_line_num_with_expression(infhandle,exp):
+    rexp = re.compile(exp)
+    infhandle.seek(0)
+    iline = 0
+    for line in infhandle.readlines():
+        if rexp.search(line):
+            return iline
+        iline = iline + 1
+    return None
+
+#
+# does line # contain expression
+#
+def does_line_num_contain_expression(infhandle,lnum,exp):
+    rexp = re.compile(exp)
+    infhandle.seek(0)
+    iline = 0
+    for line in infhandle.readlines():
+        if iline == lnum and rexp.search(line):
+            return True
+        elif iline == lnum:
+            return False
+        iline = iline + 1
+    return False
+#
 # insert macro...
 #
 def insert_macro_and_save_file(fhandle,mname,mline):
-   pdb.set_trace()
    fhandle.seek(0)
    fname  = fhandle.name
    flines = fhandle.readlines()
@@ -130,6 +202,45 @@ def insert_macro_and_save_file(fhandle,mname,mline):
 
 
 #
+# Clean up
+#
+def clean(file_name):
+
+    infhandle = open(file_name,'r')
+
+    # grab the macro name
+    macro_short_string = is_using_macro(infhandle)
+
+    if not macro_short_string:
+        print "Unable to find a macro to clean up in file ",file_name
+        return False
+
+    # get rid of all the macro calls
+    infhandle.seek(0)
+    ereg      = macro_short_string + "[^\s]+;$"
+    infhandle = remove_lines_with_expression(infhandle,ereg)
+    
+    # now get rid of the macro definition itself
+    ereg = macro_short_string + "[\(a-z]+"
+    macro_def_line = find_line_num_with_expression(infhandle,ereg)
+    macro_end_line = does_line_num_contain_expression(infhandle,macro_def_line+1,"__FILE__,__LINE__")
+    if macro_end_line:
+        # we've found our macro def...  get rid of two lines
+        infhandle.seek(0)
+        flines = infhandle.readlines()
+        flines.remove(flines[macro_def_line])
+        flines.remove(flines[macro_def_line])
+        infhandle.close()
+        infhandle = open(file_name,'w')
+        infhandle.write(''.join(flines))
+        infhandle.close()
+    else:
+        print "Unable to find the macro definition for ",file_name
+        return False
+
+    return True
+    
+#
 # Main function
 #
 def main(file_name):
@@ -139,6 +250,9 @@ def main(file_name):
 
    # determine a candidate for the macro definition
    name      = find_macro_candidate(infhandle)
+   if name == None:
+       print "Couldn't find a macro-name candidate for file ",file_name
+       return False
 
    # find a good insertion point for the DEBUG macro
    last_line_of_header = find_header(infhandle)
@@ -161,7 +275,12 @@ def main(file_name):
        # iterate through each line in our file and determine if we're at
        # the start of a C function
        ltple = find_c_function_declaration(line)
-       decl  = ltple[2]
+
+       if ltple == None:
+           decl = 'none'
+       else:
+           decl  = ltple[2]
+
        if decl == 'definition':
            # we've found a C/C++ style definition
            # if the last (non-white space) character is { then
@@ -171,7 +290,7 @@ def main(file_name):
        if in_c_func and (is_trailing_char_bracket(line) or is_leading_char_bracket(line)):
            in_c_func = False
            # record the insertion point
-           insertion_pts.append(line_index)
+           insertion_pts.append(line_index+1)
 
        # increment the line index
        line_index = line_index + 1
@@ -181,10 +300,19 @@ def main(file_name):
    #
    infhandle.seek(0)
    filelines = infhandle.readlines()
-   macrostr = ''
+   macrostr = write_macro_call(name)
+   ii       = 0
+   
    for index in insertion_pts:
-       flines.insert(index,macrostr)
+       filelines.insert(index + ii,macrostr)
+       # increment the offset
+       ii = ii + 1 
 
+   infhandle.close()
+   infhandle = open(file_name,'w')
+   infhandle.write( ''.join(filelines) )
+   infhandle.close()
+   return True
 
 #
 # use the script as a program
@@ -197,7 +325,21 @@ if __name__ == "__main__":
        print_usage()
        sys.exit(1)
 
-   print "Reading..."
+   try:
+       optlist, args = getopt.getopt(sys.argv[1:],'x',['clean','list'])
+   except getopt.GetoptError, err:
+       print str(err)
+       print_usage()
 
-   main(sys.argv[1])
+   filename = args[0]
+   opts = None
+   if nargs == 3:
+       opts = args[1]
+
+   if opts == '--clean':
+       clean(filename)
+   elif opts == '--list':
+       print "This isn't built just yet..."
+   else:
+       main(filename)
 

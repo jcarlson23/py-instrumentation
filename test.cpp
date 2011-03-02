@@ -1,12 +1,23 @@
 #include <iostream>
 #include <math.h>
 
-#define DPRINTF(fmt, ...) \
-	do { fprintf(stdout,"%s:%d:%s(): " fmt,__FILE__,__LINE__,__func__,__VA_ARGS__); } while(0)
 #define X 2
+
+int helper(void * ptr);
 
 int main(void)
 {
+  helper(NULL);
   std::cout << "Testing...\n";
   return 0;
+}
+
+int helper(void * ptr) {
+  std::cout << "helping...\n";
+  return 0;
+}
+ 
+int 
+simple(void) {
+  
 }
